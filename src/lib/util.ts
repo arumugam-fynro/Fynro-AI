@@ -11,5 +11,7 @@ export function ago(ts: number, now = Date.now()) {
 
 export const fileSize = (n: number) => (n < 1048576 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
-export const STORE_KEY = 'fynro-assistant-v2';
-export const API_KEY_STORE = 'fynro-api-key';
+export const STORE_KEY = 'fynro-assistant-v3';
+export const THEME_KEY = 'fynro-theme';
+/** Keys written by earlier builds (sample data, and API keys that used to live in the browser). */
+export const LEGACY_PREFIXES = ['fynro-assistant-v2', 'fynro-api-key'];

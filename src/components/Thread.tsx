@@ -18,21 +18,11 @@ const Bubble = memo(function Bubble({ m, last, onRetry }: { m: Message; last: bo
   }
   return (
     <div className="abox">
-      {!!m.sources?.length && <div className="pill"><Icon n="plug" size="s" />Checked {m.sources.join(' · ')}</div>}
       <div className={'atext' + (m.error ? ' err' : '') + (m.streaming ? ' caret' : '')}>{m.text}</div>
-      {m.table && (
-        <div className="tbl glass">
-          <table>
-            <thead><tr>{m.table.cols.map((c, i) => <th key={i}>{c}</th>)}</tr></thead>
-            <tbody>{m.table.rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j}>{c}</td>)}</tr>)}</tbody>
-          </table>
-        </div>
-      )}
-      {m.note && <div className="atext">{m.note}</div>}
       {!m.streaming && (
         <div className="acts">
           <button className="act" onClick={() => {
-            try { navigator.clipboard.writeText([m.text, m.note].filter(Boolean).join('\n\n')); } catch {}
+            try { navigator.clipboard.writeText(m.text); } catch {}
             setCopied(true); setTimeout(() => setCopied(false), 1500);
           }}><Icon n="copy" size="s" />{copied ? 'Copied' : 'Copy'}</button>
           {last && <button className="act" onClick={onRetry}><Icon n="retry" size="s" />Retry</button>}
@@ -63,7 +53,7 @@ export function Thread() {
   if (!msgs.length) {
     return (
       <div className="hero">
-        <div className="hi">{greet && `${greet}, ${a.data.name}`}</div>
+        <div className="hi">{greet && `${greet}${a.data.name ? `, ${a.data.name.split(' ')[0]}` : ''}`}</div>
         <h1>What should we look at today?</h1>
       </div>
     );
@@ -72,9 +62,7 @@ export function Thread() {
     <div className="scroll" ref={ref}>
       <div className="col" role="log" aria-live="polite">
         {msgs.map((m, i) => <Bubble key={i} m={m} last={i === msgs.length - 1 && !a.pending} onRetry={a.retry} />)}
-        {a.pending && lastMsg?.role === 'user' && (
-          <div className="think">{a.activeSources(false).length ? `Reading ${a.activeSources(false).join(' · ')}…` : 'Thinking…'}</div>
-        )}
+        {a.pending && lastMsg?.role === 'user' && <div className="think">Thinking…</div>}
       </div>
     </div>
   );

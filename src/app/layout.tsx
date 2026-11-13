@@ -28,7 +28,7 @@ export const viewport: Viewport = {
 };
 
 // Runs before first paint so the saved theme never flashes.
-const themeScript = `try{var s=JSON.parse(localStorage.getItem('fynro-assistant-v2')||'{}'),t=s.theme||'dark';if(t==='system')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.dataset.theme=t}catch(e){document.documentElement.dataset.theme='dark'}`;
+const themeScript = `try{var t=localStorage.getItem('fynro-theme')||'dark';if(t==='system')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.dataset.theme=t}catch(e){document.documentElement.dataset.theme='dark'}`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

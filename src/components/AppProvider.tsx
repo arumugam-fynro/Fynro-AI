@@ -2,15 +2,19 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { defaults } from '@/lib/seed';
-import { makeReply } from '@/lib/reply';
-import { API_KEY_STORE, STORE_KEY, uid } from '@/lib/util';
+import { DEFAULT_MODEL, MODELS } from '@/lib/models';
+import { LEGACY_PREFIXES, STORE_KEY, THEME_KEY, uid } from '@/lib/util';
+import { logout as logoutAction } from '@/app/actions';
 import type { Attachment, Chat, Message, Notif, NotifKind, Persisted } from '@/lib/types';
 
 type Toast = { id: string; kind: NotifKind; title: string; body?: string; chatId?: string };
-type Tab = 'general' | 'appearance' | 'connectors' | 'notifications' | 'api' | 'data';
-type KeyStatus = 'idle' | 'testing' | 'ok' | 'bad';
+export type Tab = 'general' | 'appearance' | 'notifications' | 'api' | 'data';
+export type KeyInfo = { loaded: boolean; saved: boolean; hint: string | null; updatedAt: string | null; ready: boolean; serverKey: boolean };
+type ApiErr = Error & { code?: string };
 
 export type Ctx = {
+  user: { id: string; email: string };
+  logout: () => Promise<void>;
   data: Persisted;
   patch: (p: Partial<Persisted>) => void;
   hydrated: boolean;
@@ -25,12 +29,11 @@ export type Ctx = {
   updateChat: (id: string, fn: (c: Chat) => Chat) => void;
   deleteChat: (id: string) => void;
   deleteAll: () => void;
-  send: (text: string, atts: Attachment[], opts: { research: boolean; memory: boolean }) => void;
+  send: (text: string, atts: Attachment[]) => boolean;
   retry: () => void;
   stop: () => void;
-  activeSources: (research: boolean) => string[];
   // ui
-  sbd: boolean; sbm: boolean; toggleSidebar: () => void; closeMobileSidebar: () => void;
+  sbd: boolean; sbm: boolean; toggleSidebar: () => void;
   settings: { open: boolean; tab: Tab }; openSettings: (tab?: Tab) => void; closeSettings: () => void;
   searchOpen: boolean; setSearchOpen: (v: boolean) => void;
   notifOpen: boolean; setNotifOpen: (v: boolean) => void;
@@ -45,9 +48,13 @@ export type Ctx = {
   unread: number;
   sysPerm: NotificationPermission | 'unsupported';
   enableSystemNotifs: () => Promise<void>;
-  // api key
-  serverKey: boolean;
-  apiKey: string; setApiKey: (k: string) => void; keyStatus: KeyStatus; keyError: string; testKey: (k?: string) => Promise<void>;
+  // API key (stored encrypted on the server; the browser only ever sees a masked hint)
+  keyInfo: KeyInfo;
+  keyBusy: boolean;
+  saveApiKey: (key: string) => Promise<string | null>;
+  removeApiKey: () => Promise<string | null>;
+  testApiKey: () => Promise<string | null>;
+  hasKey: boolean;
   // pwa
   canInstall: boolean; install: () => Promise<void>; installed: boolean; online: boolean;
 };
@@ -61,30 +68,49 @@ export const useApp = () => {
 
 const isMobile = () => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches;
 
-function systemPrompt(d: Persisted, sources: string[]) {
+function systemPrompt(d: Persisted) {
   const today = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
   const style = { Concise: 'Keep answers short and direct.', Balanced: 'Be clear and reasonably brief.', Detailed: 'Give thorough, step-by-step answers.' }[d.style];
   return [
-    `You are Fynro, an AI finance assistant for ${d.name}, who lives in India.`,
+    `You are Fynro, an AI finance assistant${d.name ? ` for ${d.name}` : ''}, who lives in India.`,
     `Today is ${today}. The user's financial year runs ${d.fy === 'Apr–Mar' ? 'April to March' : 'January to December'}.`,
     style,
     'Use ₹ and Indian digit grouping (e.g. ₹2,86,000). Reply in plain text only: no markdown, no tables, no asterisks. Use short paragraphs or numbered lines.',
-    sources.length
-      ? `The user enabled these sources: ${sources.join(', ')}. You cannot actually query them in this session, so never invent account balances, transactions or invoices; ask for figures or explain how to find them.`
-      : 'No data sources are connected. Never invent account figures; give general guidance and say what data would help.',
-    'You are not a licensed adviser. Flag when a decision needs a CA or SEBI-registered adviser.',
+    "You cannot see the user's bank accounts or transactions. Never invent balances, transactions, invoices or tax figures; work from what the user tells you or attaches, and say what data would help.",
+    'You are not a licensed adviser. Flag when a decision needs a CA or a SEBI-registered adviser.',
   ].join('\n');
 }
 
-const toApi = (c: Chat): { role: 'user' | 'assistant'; content: string }[] =>
+/** History for the API. Text-file contents are inlined for the turn they were attached. */
+const toApi = (c: Chat) =>
   c.messages
     .filter((m) => !m.error && (m.text || m.attachments?.length))
     .map((m) => ({
       role: m.role,
-      content: [m.text, [m.note].filter(Boolean).join(''), ...(m.attachments || []).map((a) => `[Attached ${a.kind}: ${a.name}]`)].filter(Boolean).join('\n'),
-    }));
+      content: [
+        m.text,
+        ...(m.attachments || []).map((a) => (a.text ? `[File: ${a.name}]\n${a.text}` : a.file ? '' : `[Attached ${a.kind}: ${a.name} (contents unavailable)]`)),
+      ].filter(Boolean).join('\n\n'),
+    }))
+    .filter((m) => m.content);
 
-export function AppProvider({ children }: { children: ReactNode }) {
+/** Strip in-memory-only fields before anything is written to localStorage. */
+const slim = (d: Persisted): Persisted => ({
+  ...d,
+  chats: d.chats.map((c) => ({
+    ...c,
+    messages: c.messages.map((m) => (m.attachments ? { ...m, attachments: m.attachments.map(({ file: _f, text: _t, ...a }) => a) } : m)),
+  })),
+});
+
+const fail = (msg: string, code?: string): never => {
+  throw Object.assign(new Error(msg), { code }) as ApiErr;
+};
+
+export function AppProvider({ children, user }: { children: ReactNode; user: { id: string; email: string } }) {
+  // Chats are namespaced per user so accounts sharing a browser never see each other's data.
+  const storeKey = `${STORE_KEY}:${user.id}`;
+
   const [data, setData] = useState<Persisted>(defaults);
   const [hydrated, setHydrated] = useState(false);
   const [sysDark, setSysDark] = useState(true);
@@ -98,60 +124,65 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [snack, setSnack] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [sysPerm, setSysPerm] = useState<Ctx['sysPerm']>('unsupported');
-  const [keys, setKeys] = useState<Record<string, string>>({});
-  const [keyStatus, setKeyStatus] = useState<KeyStatus>('idle');
-  const [keyError, setKeyError] = useState('');
+  const [keyInfo, setKeyInfo] = useState<KeyInfo>({ loaded: false, saved: false, hint: null, updatedAt: null, ready: true, serverKey: false });
+  const [keyBusy, setKeyBusy] = useState(false);
   const [installEv, setInstallEv] = useState<any>(null);
   const [installed, setInstalled] = useState(false);
   const [online, setOnline] = useState(true);
-  const [serverKeys, setServerKeys] = useState<{ anthropic: boolean; openai: boolean }>({ anthropic: false, openai: false });
-  const serverRef = useRef(serverKeys);
-  serverRef.current = serverKeys;
 
   const ref = useRef(data);
   ref.current = data;
-  const apiKey = keys[data.provider] || '';
-  const keyRef = useRef(apiKey);
-  keyRef.current = apiKey;
-  const keysRef = useRef(keys);
-  keysRef.current = keys;
+  const infoRef = useRef(keyInfo);
+  infoRef.current = keyInfo;
   const abort = useRef<AbortController | null>(null);
   const snackT = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const openChatRef = useRef<(id: string) => void>(() => {});
+
+  // ---- API key status (server-side, encrypted) ----
+  const refreshKey = useCallback(async () => {
+    try {
+      const r = await fetch('/api/key', { cache: 'no-store' });
+      if (r.ok) setKeyInfo({ loaded: true, ...(await r.json()) });
+      else setKeyInfo((k) => ({ ...k, loaded: true }));
+    } catch {
+      setKeyInfo((k) => ({ ...k, loaded: true }));
+    }
+  }, []);
 
   // ---- hydrate once ----
   useEffect(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') as Partial<Persisted>;
+      // Remove sample data and any browser-stored API keys left by earlier builds.
+      Object.keys(localStorage).filter((k) => LEGACY_PREFIXES.some((p) => k.startsWith(p))).forEach((k) => localStorage.removeItem(k));
+      const saved = JSON.parse(localStorage.getItem(storeKey) || '{}') as Partial<Persisted>;
       const base = defaults();
-      const chats = (saved.chats || base.chats).map((c) => ({ ...c, messages: c.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)) }));
+      const nm = user.email.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+      const chats = (saved.chats || []).map((c) => ({ ...c, messages: c.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)) }));
       setData({
-        ...base, ...saved, chats,
-        connectors: saved.connectors?.[0]?.id === 'fynro' ? saved.connectors : base.connectors,
-        notifs: saved.notifs || base.notifs,
+        ...base, name: nm, ...saved, chats,
+        model: MODELS.some((m) => m.id === saved.model) ? (saved.model as string) : DEFAULT_MODEL,
+        notifs: saved.notifs || [],
         notifPrefs: { ...base.notifPrefs, ...saved.notifPrefs },
-        activeId: saved.activeId === undefined ? base.activeId : saved.activeId,
+        activeId: chats.some((c) => c.id === saved.activeId) ? (saved.activeId as string) : null,
       });
     } catch {}
-    try {
-      const raw = localStorage.getItem(API_KEY_STORE) || '';
-      setKeys(raw.startsWith('{') ? JSON.parse(raw) : raw ? { anthropic: raw } : {});
-    } catch {}
     setSbd(window.innerWidth >= 768);
-    fetch('/api/chat').then((r) => r.json()).then(setServerKeys).catch(() => {});
     setHydrated(true);
     setOnline(navigator.onLine);
     setSysPerm('Notification' in window ? Notification.permission : 'unsupported');
     setInstalled(window.matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone === true);
+    void refreshKey();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---- persist (debounced) ----
   useEffect(() => {
     if (!hydrated) return;
     const t = setTimeout(() => {
-      try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); } catch {}
+      try { localStorage.setItem(storeKey, JSON.stringify(slim(data))); localStorage.setItem(THEME_KEY, data.theme); } catch {}
     }, 400);
     return () => clearTimeout(t);
-  }, [data, hydrated]);
+  }, [data, hydrated, storeKey]);
 
   // ---- theme ----
   useEffect(() => {
@@ -189,47 +220,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  useEffect(() => { setKeyStatus('idle'); setKeyError(''); }, [data.provider]);
-
   // ---- helpers ----
   const patch = useCallback((p: Partial<Persisted>) => setData((d) => ({ ...d, ...p })), []);
   const flash = useCallback((msg: string) => {
     clearTimeout(snackT.current);
     setSnack(msg);
-    snackT.current = setTimeout(() => setSnack(null), 2200);
+    snackT.current = setTimeout(() => setSnack(null), 2600);
   }, []);
   const updateChat = useCallback((id: string, fn: (c: Chat) => Chat) => setData((d) => ({ ...d, chats: d.chats.map((c) => (c.id === id ? fn(c) : c)) })), []);
 
   const notify: Ctx['notify'] = useCallback(({ kind = 'info', title, body, chatId }) => {
-    if (kind === 'alert' && !ref.current.notifPrefs.alerts) return;
     const n: Notif = { id: uid(), kind, title, body, chatId, at: Date.now(), read: false };
     setData((d) => ({ ...d, notifs: [n, ...d.notifs].slice(0, 60) }));
     setToasts((t) => [...t.slice(-2), { id: n.id, kind, title, body, chatId }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== n.id)), 5500);
     // OS-level notification only when the tab is not in view
-    const p = ref.current.notifPrefs;
-    if (p.system && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+    if (ref.current.notifPrefs.system && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
       navigator.serviceWorker?.ready.then((reg) =>
         reg.showNotification(title, { body, icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', tag: n.id, data: { chatId } })
       ).catch(() => {});
     }
   }, []);
-
-  // Surface the newest unread money alert once per session as an in-app toast.
-  const alertShown = useRef(false);
-  useEffect(() => {
-    if (!hydrated || alertShown.current) return;
-    const n = ref.current.notifs.find((x) => x.kind === 'alert' && !x.read);
-    if (n && ref.current.notifPrefs.alerts) {
-      const id = n.id;
-      const t = setTimeout(() => {
-        alertShown.current = true;
-        setToasts((ts) => [...ts, { id, kind: n.kind, title: n.title, body: n.body, chatId: n.chatId }]);
-        setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), 6000);
-      }, 1200);
-      return () => clearTimeout(t);
-    }
-  }, [hydrated]);
 
   const enableSystemNotifs = useCallback(async () => {
     if (!('Notification' in window)) return flash('Notifications are not supported here');
@@ -241,6 +252,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } else flash('Permission was not granted');
   }, [flash, notify]);
 
+  // ---- API key actions ----
+  const call = useCallback(async (method: string, body?: unknown): Promise<string | null> => {
+    setKeyBusy(true);
+    try {
+      const r = await fetch('/api/key', { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+      if (!r.ok) {
+        let m = 'Something went wrong.';
+        try { m = (await r.json()).error || m; } catch {}
+        return m;
+      }
+      await refreshKey();
+      return null;
+    } catch {
+      return 'You appear to be offline.';
+    } finally {
+      setKeyBusy(false);
+    }
+  }, [refreshKey]);
+  const saveApiKey = useCallback((key: string) => call('PUT', { key }), [call]);
+  const removeApiKey = useCallback(() => call('DELETE'), [call]);
+  const testApiKey = useCallback(() => call('POST'), [call]);
+  const hasKey = keyInfo.saved || keyInfo.serverKey;
+
   // ---- chats ----
   const active = useMemo(() => data.chats.find((c) => c.id === data.activeId) || null, [data.chats, data.activeId]);
 
@@ -248,7 +282,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setData((d) => ({ ...d, activeId: id }));
     if (isMobile()) setSbm(false);
   }, []);
-  const openChatRef = useRef(openChat);
   openChatRef.current = openChat;
 
   const newChat = useCallback(() => {
@@ -260,13 +293,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const deleteChat = useCallback((id: string) => setData((d) => ({ ...d, chats: d.chats.filter((c) => c.id !== id), activeId: d.activeId === id ? null : d.activeId })), []);
   const deleteAll = useCallback(() => setData((d) => ({ ...d, chats: [], activeId: null })), []);
 
-  const activeSources = useCallback((research: boolean) => {
-    const a = ref.current.connectors.filter((c) => c.connected && c.active).map((c) => c.name);
-    return research ? [...a, 'the web'] : a;
-  }, []);
-
-  const respond = useCallback(async (id: string, text: string, atts: Attachment[], research: boolean) => {
-    const sources = activeSources(research);
+  const respond = useCallback(async (id: string, atts: Attachment[]) => {
     const finish = (final: Message) => {
       updateChat(id, (c) => {
         const msgs = [...c.messages];
@@ -277,24 +304,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
       setPendingId(null);
       const d = ref.current;
-      const away = document.hidden || d.activeId !== id;
-      if (d.notifPrefs.replies && away && !final.error) {
+      if (d.notifPrefs.replies && (document.hidden || d.activeId !== id) && !final.error) {
         notify({ kind: 'reply', title: 'Fynro replied', body: final.text.replace(/\s+/g, ' ').slice(0, 110), chatId: id });
       }
     };
-
-    const key = keyRef.current;
-    if (!key && !serverRef.current[ref.current.provider]) {
-      // Offline demo mode: canned keyword replies, same as the original design.
-      await new Promise((r) => setTimeout(r, 1000));
-      let r: Pick<Message, 'text' | 'table' | 'note'> = makeReply(text, sources);
-      if (atts.length) {
-        const names = atts.map((a) => a.name).join(', ');
-        r = text ? { ...r, text: `I read ${names} alongside your accounts.\n\n${r.text}` } : { text: `I read ${names}. Do you want a summary, the key amounts and due dates, or a check against your accounts?` };
-      }
-      finish({ role: 'assistant', sources, ...r });
-      return;
-    }
 
     const ctl = new AbortController();
     abort.current = ctl;
@@ -306,7 +319,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const msgs = [...c.messages];
         const last = msgs[msgs.length - 1];
         if (last?.role === 'assistant' && last.streaming) msgs[msgs.length - 1] = { ...last, text: acc };
-        else msgs.push({ role: 'assistant', text: acc, sources, streaming: true });
+        else msgs.push({ role: 'assistant', text: acc, streaming: true });
         return { ...c, messages: msgs };
       });
     };
@@ -315,15 +328,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const res = await fetch('/api/chat', {
         method: 'POST',
         signal: ctl.signal,
-        headers: { 'content-type': 'application/json', 'x-user-api-key': key },
-        body: JSON.stringify({ provider: ref.current.provider, model: ref.current.model, system: systemPrompt(ref.current, sources), messages: chat ? toApi(chat) : [] }),
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: ref.current.model,
+          system: systemPrompt(ref.current),
+          messages: chat ? toApi(chat) : [],
+          files: atts.filter((a) => a.file).map((a) => ({ name: a.name, mime: a.file!.mime, data: a.file!.data })),
+        }),
       });
       if (!res.ok || !res.body) {
         let msg = 'Something went wrong.';
-        try { msg = (await res.json()).error || msg; } catch {}
-        throw new Error(msg);
+        let code: string | undefined;
+        try { const j = await res.json(); msg = j.error || msg; code = j.code; } catch {}
+        if (res.status === 401 && !code) { window.location.assign('/login'); return; } // session expired
+        fail(msg, code);
       }
-      const reader = res.body.getReader();
+      const reader = res.body!.getReader();
       const dec = new TextDecoder();
       for (;;) {
         const { value, done } = await reader.read();
@@ -332,24 +352,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!raf) raf = requestAnimationFrame(flush);
       }
       if (raf) cancelAnimationFrame(raf);
-      finish({ role: 'assistant', text: acc.trim() || 'The model returned an empty reply.', sources });
+      finish({ role: 'assistant', text: acc.trim() || 'The model returned an empty reply.' });
     } catch (e: any) {
       if (raf) cancelAnimationFrame(raf);
       if (e?.name === 'AbortError') {
-        if (acc) finish({ role: 'assistant', text: acc.trim(), sources });
+        if (acc) finish({ role: 'assistant', text: acc.trim() });
         else setPendingId(null);
         return;
       }
-      const msg = e?.message === 'Failed to fetch' ? 'You appear to be offline. Check your connection and retry.' : e?.message || 'Something went wrong.';
-      finish({ role: 'assistant', text: msg, error: true });
+      if (e?.code === 'no_key' || e?.code === 'bad_key') { void refreshKey(); setSettings({ open: true, tab: 'api' }); }
+      finish({ role: 'assistant', text: e?.message === 'Failed to fetch' ? 'You appear to be offline. Check your connection and retry.' : e?.message || 'Something went wrong.', error: true });
     } finally {
       abort.current = null;
     }
-  }, [activeSources, notify, updateChat]);
+  }, [notify, updateChat, refreshKey]);
 
-  const send: Ctx['send'] = useCallback((text, atts, opts) => {
+  const send: Ctx['send'] = useCallback((text, atts) => {
     text = text.trim();
-    if ((!text && !atts.length) || pendingId) return;
+    if ((!text && !atts.length) || pendingId) return false;
+    if (!infoRef.current.saved && !infoRef.current.serverKey) {
+      setSettings({ open: true, tab: 'api' });
+      flash('Add your Anthropic API key to start chatting');
+      return false;
+    }
     const msg: Message = { role: 'user', text, attachments: atts.length ? atts : undefined };
     let id = ref.current.activeId;
     if (!id || !ref.current.chats.some((c) => c.id === id)) {
@@ -363,8 +388,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ref.current = { ...ref.current, chats: ref.current.chats.map((c) => (c.id === id ? { ...c, messages: [...c.messages, msg] } : c)) };
     }
     setPendingId(id);
-    void respond(id, text, atts, opts.research);
-  }, [pendingId, respond, updateChat]);
+    void respond(id, atts);
+    return true;
+  }, [pendingId, respond, updateChat, flash]);
 
   const retry = useCallback(() => {
     const c = ref.current.chats.find((x) => x.id === ref.current.activeId);
@@ -376,7 +402,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     updateChat(c.id, (x) => ({ ...x, messages: msgs }));
     ref.current = { ...ref.current, chats: ref.current.chats.map((x) => (x.id === c.id ? { ...x, messages: msgs } : x)) };
     setPendingId(c.id);
-    void respond(c.id, lastUser.text, lastUser.attachments || [], false);
+    void respond(c.id, lastUser.attachments || []);
   }, [pendingId, respond, updateChat]);
 
   const stop = useCallback(() => abort.current?.abort(), []);
@@ -394,41 +420,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     (unread ? nav.setAppBadge(unread) : nav.clearAppBadge?.())?.catch?.(() => {});
   }, [unread, hydrated]);
 
-  // ---- API key ----
-  const setApiKey = useCallback((k: string) => {
-    k = k.trim();
-    const next = { ...keysRef.current, [ref.current.provider]: k };
-    if (!k) delete next[ref.current.provider];
-    keysRef.current = next;
-    setKeys(next);
-    setKeyStatus('idle');
-    setKeyError('');
-    try { Object.keys(next).length ? localStorage.setItem(API_KEY_STORE, JSON.stringify(next)) : localStorage.removeItem(API_KEY_STORE); } catch {}
-  }, []);
-
-  const testKey = useCallback(async (k?: string) => {
-    const key = (k ?? keyRef.current).trim();
-    if (!key) return;
-    setKeyStatus('testing');
-    setKeyError('');
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-user-api-key': key },
-        body: JSON.stringify({ action: 'test', provider: ref.current.provider, model: ref.current.model }),
-      });
-      if (!res.ok) {
-        let m = 'Key check failed.';
-        try { m = (await res.json()).error || m; } catch {}
-        throw new Error(m);
-      }
-      setKeyStatus('ok');
-    } catch (e: any) {
-      setKeyStatus('bad');
-      setKeyError(e?.message === 'Failed to fetch' ? 'You appear to be offline.' : e?.message || 'Key check failed.');
-    }
-  }, []);
-
   // ---- pwa ----
   const install = useCallback(async () => {
     if (!installEv) return;
@@ -437,21 +428,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setInstallEv(null);
   }, [installEv]);
 
+  const logout = useCallback(async () => {
+    abort.current?.abort();
+    navigator.serviceWorker?.controller?.postMessage({ type: 'clear-cache' }); // drop cached app shell
+    try { await logoutAction(); } catch {}
+    window.location.assign('/login');                                          // hard navigation wipes memory
+  }, []);
+
   const value: Ctx = {
+    user, logout,
     data, patch, hydrated, dark,
     setTheme: (t) => patch({ theme: t }),
     toggleTheme: () => patch({ theme: dark ? 'light' : 'dark' }),
-    active, pending: !!pendingId, newChat, openChat, updateChat, deleteChat, deleteAll, send, retry, stop, activeSources,
+    active, pending: !!pendingId, newChat, openChat, updateChat, deleteChat, deleteAll, send, retry, stop,
     sbd, sbm,
     toggleSidebar: () => (isMobile() ? setSbm((v) => !v) : setSbd((v) => !v)),
-    closeMobileSidebar: () => setSbm(false),
     settings, openSettings: (tab = 'general') => { setSettings({ open: true, tab }); setNotifOpen(false); setSbm(false); },
     closeSettings: () => setSettings((s) => ({ ...s, open: false })),
     searchOpen, setSearchOpen, notifOpen, setNotifOpen,
     confirm, askConfirm: setConfirm, flash, snack,
     notify, toasts, dismissToast: (id) => setToasts((t) => t.filter((x) => x.id !== id)),
     markRead, markAllRead, clearNotifs, unread, sysPerm, enableSystemNotifs,
-    serverKey: serverKeys[data.provider], apiKey, setApiKey, keyStatus, keyError, testKey,
+    keyInfo, keyBusy, saveApiKey, removeApiKey, testApiKey, hasKey,
     canInstall: !!installEv, install, installed, online,
   };
   return <C.Provider value={value}>{children}</C.Provider>;

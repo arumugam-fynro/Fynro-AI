@@ -1,10 +1,11 @@
 /* Fynro service worker: app-shell caching + notification clicks. */
-const VERSION = 'fynro-v2';
+const VERSION = 'fynro-v3';
 const STATIC = `${VERSION}-static`;
 const PAGES = `${VERSION}-pages`;
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(PAGES).then((c) => c.add('/')).then(() => self.skipWaiting()));
+  // No pre-caching of '/': it is per-user and requires a session. It is cached after a real signed-in visit.
+  e.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener('activate', (e) => {
@@ -25,7 +26,11 @@ self.addEventListener('fetch', (e) => {
   if (req.mode === 'navigate') {
     e.respondWith(
       fetch(req)
-        .then((res) => { const copy = res.clone(); caches.open(PAGES).then((c) => c.put('/', copy)); return res; })
+        .then((res) => {
+          // Only keep a genuine signed-in home page; never the login redirect or error pages.
+          if (url.pathname === '/' && res.ok && !res.redirected) { const copy = res.clone(); caches.open(PAGES).then((c) => c.put('/', copy)); }
+          return res;
+        })
         .catch(() => caches.match('/').then((r) => r || new Response('Offline', { status: 503 })))
     );
     return;
@@ -41,6 +46,11 @@ self.addEventListener('fetch', (e) => {
       })
     );
   }
+});
+
+// Sent on logout: forget every cached page so the next person on this device sees nothing.
+self.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'clear-cache') e.waitUntil(caches.keys().then((k) => Promise.all(k.filter((n) => n.startsWith(VERSION)).map((n) => caches.delete(n)))));
 });
 
 self.addEventListener('notificationclick', (e) => {

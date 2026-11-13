@@ -7,13 +7,17 @@
     "build": "next build",
     "start": "next start",
     "icons": "node scripts/make-icons.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "create-user": "node --env-file=.env scripts/create-user.mjs"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.119.0",
     "geist": "^1.9.2",
     "next": "^16.4.6",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "server-only": "^0.0.1"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

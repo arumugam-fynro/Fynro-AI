@@ -9,7 +9,7 @@ export function Header({ menu, setMenu }: { menu: MenuState; setMenu: (m: MenuSt
   return (
     <header className="hdr">
       <button className="ib t only-m" title="Menu" aria-label="Open menu" onClick={a.toggleSidebar}><Icon n="menu" size="l" /></button>
-      <span className="only-d" style={{ color: 'var(--text)', display: 'inline-flex' }}><Icon n="plug" /></span>
+      <span className="only-d" style={{ color: 'var(--text)', display: 'inline-flex' }}><Icon n="compose" /></span>
       {a.active ? (
         <button className="ttl" onClick={(e) => openMenuAt(e, a.active!.id, menu, setMenu)} aria-haspopup="menu">
           <span>{a.active.title}</span>

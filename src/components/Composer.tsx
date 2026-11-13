@@ -4,32 +4,28 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from './AppProvider';
 import { Icon } from './Icon';
 import { Chip } from './Chip';
-import { Logo } from './Logo';
 import { fileSize, uid } from '@/lib/util';
 import type { Attachment } from '@/lib/types';
 
 type PlusPos = { top?: number; bottom?: number; left: number; w: number };
 
-function Gmail() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
-      <path fill="#4285F4" d="M1.6 21h3.8v-9.3L0 7.7v11.7C0 20.3.7 21 1.6 21z" /><path fill="#34A853" d="M18.6 21h3.8c.9 0 1.6-.7 1.6-1.6V7.7l-5.4 4z" />
-      <path fill="#FBBC04" d="M18.6 3.7v8l5.4-4V5.3c0-2-2.3-3.1-3.9-1.9z" /><path fill="#EA4335" d="M5.4 11.7v-8L12 8.6l6.6-4.9v8L12 16.6z" />
-      <path fill="#C5221F" d="M0 5.3v2.4l5.4 4v-8L3.9 3.4C2.3 2.2 0 3.3 0 5.3z" />
-    </svg>
-  );
-}
+const IMG = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const TEXT = /\.(txt|csv|md|json|tsv)$/i;
+const MAX_FILE = 4 * 1024 * 1024;      // per image / PDF
+const MAX_TEXT = 200 * 1024;           // per text file (inlined into the prompt)
+const MAX_FILES = 5;
+const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,application/pdf,.pdf,.txt,.csv,.tsv,.md,.json';
 
-/** Voice dictation: Web Speech API for text + mic RMS for the waveform, with a simulated fallback. */
-function useDictation(onText: (t: string) => void, getBase: () => string) {
+/** Voice dictation: Web Speech API for the text, microphone level for the waveform. No simulation. */
+function useDictation(onText: (t: string) => void, getBase: () => string, onUnsupported: (m: string) => void) {
   const [on, setOn] = useState(false);
   const [levels, setLevels] = useState<number[]>([]);
   const [secs, setSecs] = useState(0);
-  const r = useRef<{ tick?: ReturnType<typeof setInterval>; sim?: ReturnType<typeof setInterval>; rec?: any; stream?: MediaStream; ctx?: AudioContext; an?: AnalyserNode; buf?: Uint8Array<ArrayBuffer>; base: string; t0: number; live: boolean }>({ base: '', t0: 0, live: false });
+  const r = useRef<{ tick?: ReturnType<typeof setInterval>; rec?: any; stream?: MediaStream; ctx?: AudioContext; an?: AnalyserNode; buf?: Uint8Array<ArrayBuffer>; base: string; t0: number; live: boolean }>({ base: '', t0: 0, live: false });
 
   const cleanup = useCallback(() => {
     const s = r.current;
-    clearInterval(s.tick); clearInterval(s.sim); s.sim = undefined;
+    clearInterval(s.tick);
     if (s.rec) { s.rec.onend = null; try { s.rec.stop(); } catch {} s.rec = undefined; }
     s.stream?.getTracks().forEach((t) => t.stop()); s.stream = undefined;
     try { s.ctx?.close(); } catch {}
@@ -47,6 +43,8 @@ function useDictation(onText: (t: string) => void, getBase: () => string) {
   const start = useCallback(async () => {
     const s = r.current;
     if (s.live) return;
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return onUnsupported('Voice input is not supported in this browser. Try Chrome, Edge or Safari.');
     s.live = true;
     const base = getBase();
     s.base = base ? base.replace(/\s+$/, '') + ' ' : '';
@@ -54,47 +52,37 @@ function useDictation(onText: (t: string) => void, getBase: () => string) {
     const n = window.innerWidth < 768 ? 22 : 40;
     setOn(true); setSecs(0); setLevels(Array(n).fill(0));
     s.tick = setInterval(() => {
-      let lv: number;
+      let lv = 0;
       if (s.an && s.buf) {
         s.an.getByteTimeDomainData(s.buf);
         let sum = 0;
         for (let i = 0; i < s.buf.length; i++) { const d = (s.buf[i] - 128) / 128; sum += d * d; }
         lv = Math.min(1, Math.sqrt(sum / s.buf.length) * 5);
-      } else {
-        const t = Date.now() / 1000;
-        lv = Math.max(0.05, Math.min(1, 0.25 + 0.45 * Math.abs(Math.sin(t * 3.1) * Math.cos(t * 1.7)) + Math.random() * 0.3));
       }
       setLevels((p) => [...p.slice(1), lv]);
       setSecs(Math.floor((Date.now() - s.t0) / 1000));
     }, 70);
 
-    const startSim = () => {
-      if (s.sim) return;
-      const words = 'How much did I spend on dining out this month compared to last month?'.split(' ');
-      let i = 0;
-      s.sim = setInterval(() => { if (i >= words.length) return clearInterval(s.sim); i++; onText(s.base + words.slice(0, i).join(' ')); }, 260);
-    };
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    let started = false;
-    if (SR) {
-      try {
-        const rec = new SR();
-        rec.continuous = true; rec.interimResults = true; rec.lang = 'en-IN';
-        let fin = '';
-        rec.onresult = (ev: any) => {
-          let interim = '';
-          for (let i = ev.resultIndex; i < ev.results.length; i++) {
-            const t = ev.results[i][0].transcript;
-            if (ev.results[i].isFinal) fin += t + ' '; else interim += t;
-          }
-          onText(s.base + fin + interim);
-        };
-        rec.onerror = (ev: any) => { if (['not-allowed', 'service-not-allowed', 'network'].includes(ev.error)) { s.rec = undefined; startSim(); } };
-        rec.onend = () => { if (s.live && s.rec === rec) { try { rec.start(); } catch {} } };
-        rec.start(); s.rec = rec; started = true;
-      } catch {}
-    }
-    if (!started) startSim();
+    try {
+      const rec = new SR();
+      rec.continuous = true; rec.interimResults = true; rec.lang = 'en-IN';
+      let fin = '';
+      rec.onresult = (ev: any) => {
+        let interim = '';
+        for (let i = ev.resultIndex; i < ev.results.length; i++) {
+          const t = ev.results[i][0].transcript;
+          if (ev.results[i].isFinal) fin += t + ' '; else interim += t;
+        }
+        onText(s.base + fin + interim);
+      };
+      rec.onerror = (ev: any) => {
+        if (['not-allowed', 'service-not-allowed'].includes(ev.error)) { stop(false); onUnsupported('Microphone access was blocked. Allow it in your browser settings.'); }
+        else if (ev.error === 'network') { stop(true); onUnsupported('Voice input needs an internet connection.'); }
+      };
+      rec.onend = () => { if (s.live && s.rec === rec) { try { rec.start(); } catch {} } };
+      rec.start(); s.rec = rec;
+    } catch { stop(false); return onUnsupported('Could not start voice input.'); }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (!s.live) { stream.getTracks().forEach((t) => t.stop()); return; }
@@ -104,42 +92,58 @@ function useDictation(onText: (t: string) => void, getBase: () => string) {
       ctx.createMediaStreamSource(stream).connect(an);
       s.ctx = ctx; s.an = an; s.buf = new Uint8Array(an.fftSize);
     } catch { s.an = undefined; }
-  }, [getBase, onText]);
+  }, [getBase, onText, onUnsupported, stop]);
 
   useEffect(() => cleanup, [cleanup]);
   return { on, levels, secs, start, stop };
 }
 
+const readB64 = (f: File) => new Promise<string>((res, rej) => {
+  const fr = new FileReader();
+  fr.onload = () => res(String(fr.result).split(',')[1] || '');
+  fr.onerror = () => rej(fr.error);
+  fr.readAsDataURL(f);
+});
+
 export function Composer() {
   const a = useApp();
   const [draft, setDraft] = useState('');
   const [atts, setAtts] = useState<Attachment[]>([]);
-  const [research, setResearch] = useState(false);
-  const [memory, setMemory] = useState(true);
-  const [plus, setPlus] = useState<{ view: 'main' | 'conn'; pos: PlusPos } | null>(null);
-  const [linkMode, setLinkMode] = useState(false);
-  const [link, setLink] = useState('');
+  const [plus, setPlus] = useState<{ pos: PlusPos } | null>(null);
   const [drag, setDrag] = useState(false);
   const docRef = useRef<HTMLInputElement>(null);
   const imgRef = useRef<HTMLInputElement>(null);
-  const taRef = useRef<HTMLTextAreaElement>(null);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const attsRef = useRef(atts);
+  attsRef.current = atts;
 
-  const rec = useDictation(setDraft, useCallback(() => draftRef.current, []));
+  const rec = useDictation(setDraft, useCallback(() => draftRef.current, []), a.flash);
 
-  const addFiles = useCallback((files: FileList | File[] | null) => {
-    Array.from(files || []).forEach((f) => {
-      const img = (f.type || '').startsWith('image/');
-      const at: Attachment = { id: uid(), kind: img ? 'image' : 'doc', name: f.name, meta: img ? fileSize(f.size) : `${(f.name.split('.').pop() || 'File').toUpperCase()} · ${fileSize(f.size)}` };
-      setAtts((p) => [...p, at]);
-      if (img && f.size < 1.5e6) {
-        const fr = new FileReader();
-        fr.onload = () => setAtts((p) => p.map((x) => (x.id === at.id ? { ...x, url: fr.result as string } : x)));
-        fr.readAsDataURL(f);
-      }
-    });
-  }, []);
+  const addFiles = useCallback(async (files: FileList | File[] | null) => {
+    for (const f of Array.from(files || [])) {
+      if (attsRef.current.length >= MAX_FILES) { a.flash(`You can attach up to ${MAX_FILES} files per message.`); break; }
+      const id = uid();
+      try {
+        if (IMG.includes(f.type)) {
+          if (f.size > MAX_FILE) { a.flash(`${f.name} is over 4 MB.`); continue; }
+          const data = await readB64(f);
+          setAtts((p) => [...p, { id, kind: 'image', name: f.name, meta: fileSize(f.size), file: { mime: f.type, data }, url: f.size < 1.5e6 ? `data:${f.type};base64,${data}` : undefined }]);
+        } else if (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) {
+          if (f.size > MAX_FILE) { a.flash(`${f.name} is over 4 MB.`); continue; }
+          setAtts((p) => [...p, { id, kind: 'doc', name: f.name, meta: `PDF · ${fileSize(f.size)}`, file: { mime: 'application/pdf', data: '' } }]);
+          const data = await readB64(f);
+          setAtts((p) => p.map((x) => (x.id === id ? { ...x, file: { mime: 'application/pdf', data } } : x)));
+        } else if (TEXT.test(f.name) || f.type.startsWith('text/')) {
+          if (f.size > MAX_TEXT) { a.flash(`${f.name} is too large. Text files can be up to 200 KB.`); continue; }
+          const text = await f.text();
+          setAtts((p) => [...p, { id, kind: 'doc', name: f.name, meta: `${(f.name.split('.').pop() || 'TXT').toUpperCase()} · ${fileSize(f.size)}`, text }]);
+        } else {
+          a.flash(`${f.name}: use an image, PDF, CSV or text file.`);
+        }
+      } catch { a.flash(`Could not read ${f.name}.`); }
+    }
+  }, [a]);
 
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
@@ -150,64 +154,55 @@ export function Composer() {
     return () => window.removeEventListener('keydown', k);
   }, [rec]);
 
-  const sources = a.activeSources(research);
-  const connected = a.data.connectors.filter((c) => c.connected);
-  const canSend = (!!draft.trim() || atts.length > 0) && !a.pending;
+  const ready = atts.every((x) => !x.file || x.file.data);
+  const canSend = (!!draft.trim() || atts.length > 0) && !a.pending && ready;
 
   const submit = () => {
     if (rec.on) rec.stop(true);
     if (!canSend) return;
-    a.send(draft, atts, { research, memory });
-    setDraft(''); setAtts([]); setPlus(null);
+    if (a.send(draft, atts)) { setDraft(''); setAtts([]); setPlus(null); }
   };
 
-  const openPlus = (e: React.MouseEvent<HTMLElement>, view: 'main' | 'conn') => {
-    if (plus && view === 'main' && plus.view === 'main') return setPlus(null);
+  const openPlus = (e: React.MouseEvent<HTMLElement>) => {
+    if (plus) return setPlus(null);
     const rc = e.currentTarget.getBoundingClientRect();
-    const w = Math.min(320, window.innerWidth - 16);
+    const w = Math.min(300, window.innerWidth - 16);
     const left = Math.max(8, Math.min(rc.left, window.innerWidth - w - 8));
-    const below = window.innerHeight - rc.bottom > 380;
-    setLinkMode(false);
-    setPlus({ view, pos: below ? { top: rc.bottom + 8, left, w } : { bottom: window.innerHeight - rc.top + 8, left, w } });
-  };
-
-  const addLink = () => {
-    let v = link.trim();
-    if (!v) return;
-    if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
-    let u: URL | undefined;
-    try { u = new URL(v); } catch {}
-    if (!u || !u.hostname.includes('.')) return a.flash('Enter a valid link');
-    const name = (u.hostname.replace(/^www\./, '') + u.pathname).replace(/\/$/, '');
-    setAtts((p) => [...p, { id: uid(), kind: 'link', name, url: v, meta: 'Link' }]);
-    setLink(''); setLinkMode(false); setPlus(null);
+    const below = window.innerHeight - rc.bottom > 220;
+    setPlus({ pos: below ? { top: rc.bottom + 8, left, w } : { bottom: window.innerHeight - rc.top + 8, left, w } });
   };
 
   const mmss = `${Math.floor(rec.secs / 60)}:${String(rec.secs % 60).padStart(2, '0')}`;
+  const needKey = a.keyInfo.loaded && !a.hasKey;
 
   return (
     <div className="cwrap">
+      {needKey && (
+        <button className="banner" onClick={() => a.openSettings('api')}>
+          <Icon n="key" size="m" />
+          <span style={{ flex: 1 }}>Add your Anthropic API key to start chatting</span>
+          <Icon n="fwd" size="m" />
+        </button>
+      )}
       <div className="tray glass">
         <div
           className={'well' + (drag ? ' drag' : '')}
           onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
           onDragLeave={() => setDrag(false)}
-          onDrop={(e) => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); }}
+          onDrop={(e) => { e.preventDefault(); setDrag(false); void addFiles(e.dataTransfer.files); }}
         >
-          <input ref={imgRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
-          <input ref={docRef} type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt" hidden onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
+          <input ref={imgRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
+          <input ref={docRef} type="file" multiple accept={ACCEPT} hidden onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
           {atts.length > 0 && <div className="chips">{atts.map((x) => <Chip key={x.id} a={x} onRemove={() => setAtts((p) => p.filter((y) => y.id !== x.id))} />)}</div>}
           <textarea
-            ref={taRef} className="ta" rows={2} value={draft} aria-label="Message"
+            className="ta" rows={2} value={draft} aria-label="Message"
             placeholder={rec.on ? 'Listening…' : 'Ask about your money, taxes or investments'}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
           />
           {!rec.on ? (
             <div className="crow">
-              <button className={'cb pbtn' + (plus ? ' on' : '')} title="Add files and more" aria-label="Add files and more" aria-haspopup="menu" onClick={(e) => openPlus(e, 'main')}><Icon n="plus" size="l" /></button>
-              {research && <button className="tag on" title="Turn off research" onClick={() => setResearch(false)}><Icon n="globe" size="s" />Research<Icon n="x" size="s" /></button>}
-              {sources.length > 0 && <button className="tag" onClick={(e) => openPlus(e, 'conn')}><Icon n="plug" size="s" />{sources.length === 1 ? sources[0] : `${sources.length} sources`}</button>}
+              <button className={'cb pbtn' + (plus ? ' on' : '')} title="Add files" aria-label="Add files" aria-haspopup="menu" onClick={openPlus}><Icon n="plus" size="l" /></button>
               <div style={{ flex: 1 }} />
               <button className="cb" title="Dictate" aria-label="Dictate" onClick={() => { setPlus(null); void rec.start(); }}><Icon n="mic" size="l" /></button>
               {a.pending ? (
@@ -236,39 +231,9 @@ export function Composer() {
         <>
           <div className="scrim" onClick={() => setPlus(null)} />
           <div className="plus pop" role="menu" style={{ top: plus.pos.top, bottom: plus.pos.bottom, left: plus.pos.left, width: plus.pos.w }}>
-            {plus.view === 'main' ? (
-              <>
-                <button className="pi" onClick={() => { setPlus(null); docRef.current?.click(); }}><Icon n="file" size="l" /><span className="grow">Upload or add files</span><kbd>⌘ U</kbd></button>
-                <button className="pi only-m" onClick={() => { setPlus(null); imgRef.current?.click(); }}><Icon n="camera" size="l" /><span className="grow">Take a photo</span></button>
-                {!linkMode ? (
-                  <button className="pi" onClick={() => setLinkMode(true)}><Icon n="link" size="l" /><span className="grow">Add a link</span></button>
-                ) : (
-                  <div className="linkrow">
-                    <input className="inp" autoFocus placeholder="example.com/statement" value={link} onChange={(e) => setLink(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addLink(); if (e.key === 'Escape') setLinkMode(false); }} />
-                    <button className="btn" onClick={addLink}>Add</button>
-                  </div>
-                )}
-                <div className="mdiv" style={{ margin: '5px 12px' }} />
-                <button className="pi" onClick={() => setPlus({ ...plus, view: 'conn' })}><Icon n="plug" size="l" /><span className="grow">Connectors</span><Icon n="fwd" size="m" /></button>
-                <button className="pi" onClick={() => setResearch(!research)}><Icon n="globe" size="l" /><span className="grow">Research</span>{research && <span style={{ color: 'var(--check)', display: 'inline-flex' }}><Icon n="check" size="m" /></span>}</button>
-                <button className="pi" onClick={() => setMemory(!memory)}><Icon n="brain" size="l" /><span className="grow">Memory</span>{memory && <span style={{ color: 'var(--check)', display: 'inline-flex' }}><Icon n="check" size="m" /></span>}</button>
-              </>
-            ) : (
-              <>
-                <button className="pi sub" onClick={() => setPlus({ ...plus, view: 'main' })}><Icon n="back" size="m" /><span className="grow">Connectors</span></button>
-                <div className="mdiv" style={{ margin: '5px 12px' }} />
-                {connected.map((c) => (
-                  <button key={c.id} className="pi" onClick={() => a.patch({ connectors: a.data.connectors.map((x) => (x.id === c.id ? { ...x, active: !x.active } : x)) })}>
-                    {c.id === 'gmail' ? <span className="ctile w"><Gmail /></span> : <Logo size={26} radius={8} />}
-                    <span className="grow">{c.name}</span>
-                    <span className={'tog' + (c.active ? ' on' : '')}><i /></span>
-                  </button>
-                ))}
-                {!connected.length && <div style={{ padding: '10px 12px', fontSize: 14, color: 'var(--muted)' }}>No connectors linked yet.</div>}
-                <div className="mdiv" style={{ margin: '5px 12px' }} />
-                <button className="pi" style={{ fontSize: 14 }} onClick={() => { setPlus(null); a.openSettings('connectors'); }}><Icon n="gear" size="l" /><span className="grow">Manage connectors</span></button>
-              </>
-            )}
+            <button className="pi" onClick={() => { setPlus(null); docRef.current?.click(); }}><Icon n="file" size="l" /><span className="grow">Upload or add files</span><kbd>⌘ U</kbd></button>
+            <button className="pi only-m" onClick={() => { setPlus(null); imgRef.current?.click(); }}><Icon n="camera" size="l" /><span className="grow">Take a photo</span></button>
+            <div className="hint" style={{ padding: '6px 12px 8px' }}>Images, PDFs, CSV and text files. Claude reads them with your message.</div>
           </div>
         </>
       )}

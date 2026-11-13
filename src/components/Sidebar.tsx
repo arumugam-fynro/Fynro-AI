@@ -50,7 +50,7 @@ function RenameInput({ chat, done }: { chat: Chat; done: (v: string | null) => v
 export function Sidebar({ menu, setMenu, renameId, setRenameId }: { menu: MenuState; setMenu: (m: MenuState) => void; renameId: string | null; setRenameId: (id: string | null) => void }) {
   const a = useApp();
   const [acct, setAcct] = useState(false);
-  const { chats, activeId, connectors, name } = a.data;
+  const { chats, activeId, name } = a.data;
 
   const sections = useMemo(() => {
     const sorted = [...chats].sort((x, y) => y.updated - x.updated);
@@ -61,7 +61,6 @@ export function Sidebar({ menu, setMenu, renameId, setRenameId }: { menu: MenuSt
     return s;
   }, [chats]);
 
-  const connected = connectors.filter((c) => c.connected).length;
   const initial = (name || '?').trim().charAt(0).toUpperCase();
   const onMenu = (e: React.MouseEvent<HTMLElement>, id: string) => { setAcct(false); openMenuAt(e, id, menu, setMenu); };
 
@@ -82,7 +81,6 @@ export function Sidebar({ menu, setMenu, renameId, setRenameId }: { menu: MenuSt
         <div className="hr" />
         <div className="nav">
           <button className="navb pri" onClick={a.newChat}><Icon n="plus" /><span style={{ flex: 1 }}>New chat</span></button>
-          <button className="navb" onClick={() => a.openSettings('connectors')}><Icon n="plug" /><span style={{ flex: 1 }}>Connectors</span><span className="badge">{connected}</span></button>
         </div>
         <div className="list">
           {sections.map((s) => (
@@ -100,14 +98,14 @@ export function Sidebar({ menu, setMenu, renameId, setRenameId }: { menu: MenuSt
               )}
             </div>
           ))}
-          {!chats.length && <div className="empty">No chats yet.</div>}
+          {!chats.length && <div className="empty">No chats yet. Start one below.</div>}
         </div>
         <div className="acct">
           <button onClick={() => { setAcct(!acct); setMenu(null); }}>
             <span className="av">{initial}</span>
             <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', lineHeight: 1.3 }}>
               <span style={{ fontSize: 14, fontWeight: 500 }}>{name}</span>
-              <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>Pro plan</span>
+              <span style={{ fontSize: 12.5, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.user.email}</span>
             </span>
             <span style={{ color: 'var(--muted)' }}><Icon n="updown" size="m" /></span>
           </button>
@@ -118,7 +116,7 @@ export function Sidebar({ menu, setMenu, renameId, setRenameId }: { menu: MenuSt
                 <button className="mi" onClick={() => { setAcct(false); a.openSettings('general'); }}><Icon n="gear" size="m" />Settings</button>
                 <button className="mi" onClick={() => { setAcct(false); a.toggleTheme(); }}><Icon n={a.dark ? 'sun' : 'moon'} size="m" />{a.dark ? 'Light theme' : 'Dark theme'}</button>
                 <div className="mdiv" />
-                <button className="mi" onClick={() => setAcct(false)}><Icon n="logout" size="m" />Log out</button>
+                <button className="mi" onClick={() => { setAcct(false); void a.logout(); }}><Icon n="logout" size="m" />Log out</button>
               </div>
             </>
           )}
@@ -129,7 +127,6 @@ export function Sidebar({ menu, setMenu, renameId, setRenameId }: { menu: MenuSt
         <button className="ib" title="Open sidebar" aria-label="Open sidebar" onClick={a.toggleSidebar}><Icon n="panel" /></button>
         <button className="ib" title="New chat" aria-label="New chat" onClick={a.newChat}><Icon n="plus" /></button>
         <button className="ib" title="Search" aria-label="Search" onClick={() => a.setSearchOpen(true)}><Icon n="search" /></button>
-        <button className="ib" title="Connectors" aria-label="Connectors" onClick={() => a.openSettings('connectors')}><Icon n="plug" /></button>
         <div style={{ flex: 1 }} />
         <button className="av" title="Settings" aria-label="Settings" style={{ cursor: 'pointer' }} onClick={() => a.openSettings('general')}>{initial}</button>
       </aside>
