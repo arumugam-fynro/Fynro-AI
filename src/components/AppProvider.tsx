@@ -51,7 +51,7 @@ export type Ctx = {
   // API key (stored encrypted on the server; the browser only ever sees a masked hint)
   keyInfo: KeyInfo;
   keyBusy: boolean;
-  saveApiKey: (key: string) => Promise<string | null>;
+  saveApiKey: (key: string, workspaceId?: string) => Promise<string | null>;
   removeApiKey: () => Promise<string | null>;
   testApiKey: () => Promise<string | null>;
   hasKey: boolean;
@@ -270,7 +270,7 @@ export function AppProvider({ children, user }: { children: ReactNode; user: { i
       setKeyBusy(false);
     }
   }, [refreshKey]);
-  const saveApiKey = useCallback((key: string) => call('PUT', { key }), [call]);
+  const saveApiKey = useCallback((key: string, workspaceId?: string) => call('PUT', { key, workspaceId: workspaceId || undefined }), [call]);
   const removeApiKey = useCallback(() => call('DELETE'), [call]);
   const testApiKey = useCallback(() => call('POST'), [call]);
   const hasKey = keyInfo.saved || keyInfo.serverKey;

@@ -62,7 +62,9 @@ export async function POST(req: NextRequest) {
   } catch { return json(400, { error: 'Invalid request body.' }); }
 
   // The user's locked key (decrypted server-side only), else an optional shared server key.
-  const key = (await loadKey(g.user.id)) || process.env.ANTHROPIC_API_KEY || '';
+  const stored = await loadKey(g.user.id);
+  const key = stored?.key || process.env.ANTHROPIC_API_KEY || '';
+  const workspaceId = stored ? stored.workspaceId : process.env.ANTHROPIC_WORKSPACE_ID || undefined;
   if (!key) return json(401, { error: 'Add your Anthropic API key in Settings to start chatting.', code: 'no_key' });
 
   const msgs = (Array.isArray(body.messages) ? body.messages : [])
@@ -86,14 +88,14 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const res = await streamMessages(key, {
+    const res = await streamMessages(key, workspaceId, {
       model: isModel(body.model) ? body.model : DEFAULT_MODEL,
       system: typeof body.system === 'string' ? body.system.slice(0, 4000) : '',
       messages: msgs,
     }, req.signal);
     if (!res.ok || !res.body) {
       const bad = res.status === 401 || res.status === 403;
-      return json(bad ? 424 : 502, { error: bad ? 'Your saved Anthropic key was rejected. Replace it in Settings › API key.' : await friendly(res), code: bad ? 'bad_key' : undefined });
+      return json(bad ? 424 : 502, { error: bad ? 'Your saved Anthropic key was rejected. Replace it in Settings › API key.' : await friendly(res, workspaceId), code: bad ? 'bad_key' : undefined });
     }
     return new Response(toText(res.body), { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' } });
   } catch (e: unknown) {

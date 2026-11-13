@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useApp, type Tab } from './AppProvider';
 import { Icon, type IconName } from './Icon';
 import { MODELS } from '@/lib/models';
@@ -22,15 +22,16 @@ function ApiKeyPanel() {
   const a = useApp();
   const { keyInfo: k } = a;
   const [val, setVal] = useState('');
+  const [ws, setWs] = useState('');
   const [show, setShow] = useState(false);
   const [err, setErr] = useState('');
   const [ok, setOk] = useState('');
 
   const save = async () => {
     setErr(''); setOk('');
-    const e = await a.saveApiKey(val.trim());
+    const e = await a.saveApiKey(val.trim(), ws.trim());
     if (e) return setErr(e);
-    setVal(''); setShow(false); setOk('Key verified and locked.');
+    setVal(''); setWs(''); setShow(false); setOk('Key verified and locked.');
   };
   const test = async () => { setErr(''); setOk(''); const e = await a.testApiKey(); e ? setErr(e) : setOk('Key is working.'); };
   const remove = () => a.askConfirm({
@@ -72,6 +73,13 @@ function ApiKeyPanel() {
           <button className="ib" style={{ height: 40, width: 40 }} title={show ? 'Hide' : 'Show'} aria-label={show ? 'Hide key' : 'Show key'} onClick={() => setShow(!show)}><Icon n={show ? 'eyeoff' : 'eye'} /></button>
           <button className="btn" style={{ height: 40 }} disabled={!val.trim() || a.keyBusy} onClick={() => void save()}>{a.keyBusy ? 'Checking…' : 'Verify & lock'}</button>
         </div>
+        {(val.trim().startsWith('sk-ant-usr-') || ws || /workspace/i.test(err)) && (
+          <div className="field" style={{ marginTop: 4 }}>
+            <label htmlFor="ws">Workspace ID <span style={{ opacity: .7 }}>(for user-scoped keys, sk-ant-usr-…)</span></label>
+            <input id="ws" className="inp" style={{ fontFamily: 'var(--mono)', fontSize: 13.5 }} placeholder="wrkspc_…" autoComplete="off" autoCapitalize="none" spellCheck={false} value={ws} onChange={(e) => setWs(e.target.value)} />
+            <span className="hint">Find it in the Anthropic Console under Settings › Workspaces. Or create the key inside a workspace and you won&apos;t need this.</span>
+          </div>
+        )}
         {err && <span className="status no" role="alert"><Icon n="alert" size="s" />{err}</span>}
         {ok && <span className="status ok" role="status"><Icon n="check" size="s" />{ok}</span>}
       </div>
@@ -116,12 +124,15 @@ export function SettingsModal() {
   const a = useApp();
   const { data } = a;
   const tab = a.settings.tab;
+  const nav = useRef<HTMLElement>(null);
+  // On phones the tab strip scrolls sideways: keep the active tab in view.
+  useEffect(() => { nav.current?.querySelector('.tab.on')?.scrollIntoView({ inline: 'center', block: 'nearest' }); }, [tab]);
 
   return (
-    <div className="ov mid" style={{ zIndex: 60 }} onClick={a.closeSettings}>
+    <div className="ov set-ov" onClick={a.closeSettings}>
       <div className="modal set pop" role="dialog" aria-modal="true" aria-label="Settings" style={{ position: 'relative' }} onClick={(e) => e.stopPropagation()}>
         <button className="ib xbtn" aria-label="Close settings" onClick={a.closeSettings}><Icon n="x" /></button>
-        <nav className="set-nav">
+        <nav className="set-nav" ref={nav}>
           <h2>Settings</h2>
           {TABS.map(([id, label, ic]) => <button key={id} className={'tab' + (tab === id ? ' on' : '')} onClick={() => a.openSettings(id)}><Icon n={ic} size="m" />{label}</button>)}
         </nav>

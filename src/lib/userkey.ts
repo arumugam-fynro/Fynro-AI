@@ -13,17 +13,24 @@ export async function getKeyMeta(userId: string): Promise<{ ready: boolean; hint
   return { ready: true, hint: data?.hint ?? null, updatedAt: data?.updated_at ?? null };
 }
 
-export async function loadKey(userId: string): Promise<string | null> {
+export type StoredKey = { key: string; workspaceId?: string };
+
+export async function loadKey(userId: string): Promise<StoredKey | null> {
   const sb = await createClient();
   const { data } = await sb.from('user_api_keys').select('ciphertext').eq('user_id', userId).maybeSingle<Pick<Row, 'ciphertext'>>();
   if (!data) return null;
-  try { return decrypt(data.ciphertext, userId); } catch { return null; } // wrong secret / tampered row
+  try {
+    const plain = decrypt(data.ciphertext, userId);
+    if (plain.startsWith('{')) { const j = JSON.parse(plain); return { key: String(j.k), workspaceId: j.w ? String(j.w) : undefined }; }
+    return { key: plain };
+  } catch { return null; } // wrong secret / tampered row
 }
 
-export async function saveKey(userId: string, key: string): Promise<string | null> {
+export async function saveKey(userId: string, key: string, workspaceId?: string): Promise<string | null> {
   const sb = await createClient();
-  const hint = `sk-ant-…${key.slice(-4)}`;
-  const { error } = await sb.from('user_api_keys').upsert({ user_id: userId, ciphertext: encrypt(key, userId), hint, updated_at: new Date().toISOString() });
+  const hint = `sk-ant-…${key.slice(-4)}` + (workspaceId ? ` · ${workspaceId.slice(0, 10)}…` : '');
+  const payload = JSON.stringify(workspaceId ? { k: key, w: workspaceId } : { k: key });
+  const { error } = await sb.from('user_api_keys').upsert({ user_id: userId, ciphertext: encrypt(payload, userId), hint, updated_at: new Date().toISOString() });
   return error ? error.message : null;
 }
 
