@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from './AppProvider';
 import { Icon } from './Icon';
 import { Chip } from './Chip';
+import { Logo } from './Logo';
 import { fileSize, uid } from '@/lib/util';
 import type { Attachment } from '@/lib/types';
 
@@ -258,7 +259,7 @@ export function Composer() {
                 <div className="mdiv" style={{ margin: '5px 12px' }} />
                 {connected.map((c) => (
                   <button key={c.id} className="pi" onClick={() => a.patch({ connectors: a.data.connectors.map((x) => (x.id === c.id ? { ...x, active: !x.active } : x)) })}>
-                    {c.id === 'gmail' ? <span className="ctile w"><Gmail /></span> : <span className="ctile">F</span>}
+                    {c.id === 'gmail' ? <span className="ctile w"><Gmail /></span> : <Logo size={26} radius={8} />}
                     <span className="grow">{c.name}</span>
                     <span className={'tog' + (c.active ? ' on' : '')}><i /></span>
                   </button>

@@ -3,6 +3,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from './AppProvider';
 import { Icon } from './Icon';
+import { Logo } from './Logo';
 import type { Chat } from '@/lib/types';
 
 export type MenuState = { id: string; top: number; left: number } | null;
@@ -69,7 +70,7 @@ export function Sidebar({ menu, setMenu, renameId, setRenameId }: { menu: MenuSt
       <div className="backdrop" onClick={a.toggleSidebar} />
       <aside className="sb" aria-label="Sidebar">
         <div className="sb-top">
-          <div className="logo">F</div>
+          <Logo />
           <div className="name">Fynro</div>
           <button className="ib" title="Close sidebar" aria-label="Close sidebar" onClick={a.toggleSidebar}><Icon n="panel" /></button>
         </div>
@@ -124,7 +125,7 @@ export function Sidebar({ menu, setMenu, renameId, setRenameId }: { menu: MenuSt
         </div>
       </aside>
       <aside className="rail" aria-label="Sidebar rail">
-        <div className="logo" style={{ marginBottom: 8 }}>F</div>
+        <div style={{ marginBottom: 8 }}><Logo /></div>
         <button className="ib" title="Open sidebar" aria-label="Open sidebar" onClick={a.toggleSidebar}><Icon n="panel" /></button>
         <button className="ib" title="New chat" aria-label="New chat" onClick={a.newChat}><Icon n="plus" /></button>
         <button className="ib" title="Search" aria-label="Search" onClick={() => a.setSearchOpen(true)}><Icon n="search" /></button>

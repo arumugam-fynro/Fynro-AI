@@ -1,5 +1,5 @@
 /* Fynro service worker: app-shell caching + notification clicks. */
-const VERSION = 'fynro-v1';
+const VERSION = 'fynro-v2';
 const STATIC = `${VERSION}-static`;
 const PAGES = `${VERSION}-pages`;
 

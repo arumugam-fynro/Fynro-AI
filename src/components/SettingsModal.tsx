@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useApp } from './AppProvider';
 import { Icon, type IconName } from './Icon';
+import { Logo } from './Logo';
 import { MODELS } from '@/lib/seed';
 import type { Persisted } from '@/lib/types';
 
@@ -113,7 +114,7 @@ export function SettingsModal() {
   const tab = a.settings.tab;
   const Row = ({ c }: { c: Persisted['connectors'][number] }) => (
     <div className="card">
-      {c.id === 'gmail' ? <span className="ctile w" style={{ width: 36, height: 36 }}><svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M1.6 21h3.8v-9.3L0 7.7v11.7C0 20.3.7 21 1.6 21z" /><path fill="#34A853" d="M18.6 21h3.8c.9 0 1.6-.7 1.6-1.6V7.7l-5.4 4z" /><path fill="#FBBC04" d="M18.6 3.7v8l5.4-4V5.3c0-2-2.3-3.1-3.9-1.9z" /><path fill="#EA4335" d="M5.4 11.7v-8L12 8.6l6.6-4.9v8L12 16.6z" /><path fill="#C5221F" d="M0 5.3v2.4l5.4 4v-8L3.9 3.4C2.3 2.2 0 3.3 0 5.3z" /></svg></span> : <span className="ctile" style={{ width: 36, height: 36, fontSize: 16 }}>F</span>}
+      {c.id === 'gmail' ? <span className="ctile w" style={{ width: 36, height: 36 }}><svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M1.6 21h3.8v-9.3L0 7.7v11.7C0 20.3.7 21 1.6 21z" /><path fill="#34A853" d="M18.6 21h3.8c.9 0 1.6-.7 1.6-1.6V7.7l-5.4 4z" /><path fill="#FBBC04" d="M18.6 3.7v8l5.4-4V5.3c0-2-2.3-3.1-3.9-1.9z" /><path fill="#EA4335" d="M5.4 11.7v-8L12 8.6l6.6-4.9v8L12 16.6z" /><path fill="#C5221F" d="M0 5.3v2.4l5.4 4v-8L3.9 3.4C2.3 2.2 0 3.3 0 5.3z" /></svg></span> : <Logo size={36} radius={10} />}
       <span className="grow"><b>{c.name}</b><span>{c.connected && <i className="on-dot" />}{c.desc}</span></span>
       <button className={'btn' + (c.connected ? ' ghost' : '')} onClick={() => {
         a.patch({ connectors: data.connectors.map((x) => (x.id === c.id ? { ...x, connected: !x.connected, active: !x.connected } : x)) });
